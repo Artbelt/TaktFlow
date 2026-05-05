@@ -1,11 +1,17 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 import '../database/app_database.dart';
 import '../models/measurement_record_model.dart';
 import '../models/template_model.dart';
 import '../services/measurement_timer_service.dart';
-import '../widgets/big_bottom_action.dart';
-import '../widgets/section_title.dart';
+import '../widgets/measurement/current_operation_view.dart';
+import '../widgets/measurement/last_ticks_list.dart';
+import '../widgets/measurement/main_measurement_button.dart';
+import '../widgets/measurement/measurement_status_banner.dart';
+import '../widgets/measurement/measurement_top_bar.dart';
+import '../widgets/measurement/next_operation_view.dart';
+import '../widgets/measurement/timer_view.dart';
 
 class MeasurementScreen extends StatefulWidget {
   const MeasurementScreen({super.key, required this.templateId});
@@ -17,11 +23,15 @@ class MeasurementScreen extends StatefulWidget {
 }
 
 class _MeasurementScreenState extends State<MeasurementScreen> {
+  static const _debounceMs = 250;
+
   final _db = AppDatabase.instance;
   MeasurementTimerService? _service;
   TemplateModel? _template;
   bool _loading = true;
+
   List<MeasurementRecordModel> _recent = [];
+  DateTime? _lastMainTap;
 
   @override
   void initState() {
@@ -54,7 +64,16 @@ class _MeasurementScreenState extends State<MeasurementScreen> {
       _recent = [];
       return;
     }
-    _recent = await _db.getLastRecordsForSession(_service!.sessionId!, 5);
+    _recent = await _db.getLastRecordsForSession(_service!.sessionId!, 3);
+  }
+
+  bool _mainDebounceConsume() {
+    final now = DateTime.now();
+    if (_lastMainTap != null && now.difference(_lastMainTap!).inMilliseconds < _debounceMs) {
+      return false;
+    }
+    _lastMainTap = now;
+    return true;
   }
 
   Future<bool> _confirmExit() async {
@@ -63,8 +82,8 @@ class _MeasurementScreenState extends State<MeasurementScreen> {
     final ok = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
-        title: const Text('Завершить замер?'),
-        content: const Text('Активная сессия будет закрыта и сохранена в истории.'),
+        title: const Text('Выйти из замера?'),
+        content: const Text('Замер не завершён. Выйти?'),
         actions: [
           TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Остаться')),
           FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Выйти')),
@@ -89,14 +108,48 @@ class _MeasurementScreenState extends State<MeasurementScreen> {
     if (allow && mounted) await _leave();
   }
 
-  String _formatElapsed(int ms) {
-    final sec = ms / 1000.0;
-    if (sec >= 60) {
-      final m = sec ~/ 60;
-      final s = sec - m * 60;
-      return '$mм ${s.toStringAsFixed(1)}с';
-    }
-    return '${sec.toStringAsFixed(1)} с';
+  Future<void> _togglePausePressed() async {
+    final s = _service;
+    if (s == null || !s.started) return;
+    HapticFeedback.selectionClick();
+    s.togglePause();
+  }
+
+  Future<void> _undoPressed() async {
+    final s = _service;
+    if (s == null || !s.started || _recent.isEmpty) return;
+
+    final messenger = ScaffoldMessenger.of(context);
+    final payload = await s.undoLastTickForRedo();
+    await _refreshRecent();
+    setState(() {});
+
+    if (!mounted || payload == null) return;
+
+    messenger
+      ..clearSnackBars()
+      ..showSnackBar(
+        SnackBar(
+          content: const Text('Отсечка отменена'),
+          duration: const Duration(seconds: 5),
+          action: SnackBarAction(
+            label: 'Вернуть',
+            onPressed: () async {
+              await s.redoUndoneTick(payload);
+              await _refreshRecent();
+              if (mounted) setState(() {});
+            },
+          ),
+        ),
+      );
+
+    HapticFeedback.lightImpact();
+  }
+
+  String _primaryLabel(MeasurementTimerService service, String opName) {
+    if (!service.started) return 'СТАРТ';
+    if (service.paused) return 'ПРОДОЛЖИТЬ: $opName';
+    return 'ЗАВЕРШИТЬ: $opName';
   }
 
   @override
@@ -113,6 +166,7 @@ class _MeasurementScreenState extends State<MeasurementScreen> {
     }
 
     final service = _service!;
+    final op = service.currentOperation;
 
     return PopScope(
       canPop: false,
@@ -123,135 +177,81 @@ class _MeasurementScreenState extends State<MeasurementScreen> {
       child: ListenableBuilder(
         listenable: service,
         builder: (context, _) {
-          final op = service.currentOperation;
+          final currentOp = service.currentOperation;
+          final opName = currentOp?.name ?? '';
           final elapsed = service.activeElapsedMs;
-          final mainLabel = !service.started
-              ? 'СТАРТ'
-              : 'ЗАВЕРШИТЬ: ${op?.name ?? ""}';
+          final canUndo = service.started && _recent.isNotEmpty;
+
+          Future<void> onPrimary() async {
+            if (!_mainDebounceConsume()) return;
+            final s = _service!;
+            final cOp = s.currentOperation;
+            if (cOp == null) return;
+
+            if (!s.started) {
+              HapticFeedback.lightImpact();
+              await s.start();
+            } else if (s.paused) {
+              HapticFeedback.lightImpact();
+              s.togglePause();
+            } else {
+              final cycleBoundary = await s.completeCurrentOperation();
+              HapticFeedback.lightImpact();
+              if (cycleBoundary) {
+                HapticFeedback.mediumImpact();
+              }
+            }
+
+            await _refreshRecent();
+            setState(() {});
+          }
 
           return Scaffold(
-            appBar: AppBar(
-              title: Text(_template?.name ?? 'Замер'),
-              leading: BackButton(onPressed: _handlePop),
+            appBar: MeasurementTopBar(
+              title: _template?.name ?? 'Замер',
+              started: service.started,
+              paused: service.paused,
+              canUndo: canUndo,
+              onBack: _handlePop,
+              onTogglePause: _togglePausePressed,
+              onUndo: _undoPressed,
             ),
             body: Column(
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
-                Padding(
-                  padding: const EdgeInsets.fromLTRB(16, 12, 16, 4),
-                  child: Text(
-                    'Цикл: ${service.cycleNumber}',
-                    style: Theme.of(context).textTheme.headlineSmall?.copyWith(fontWeight: FontWeight.w800),
-                    textAlign: TextAlign.center,
+                MeasurementStatusBanner(
+                  started: service.started,
+                  paused: service.paused,
+                  cycleNumber: service.cycleNumber,
+                ),
+                CurrentOperationView(
+                  title: opName,
+                  started: service.started,
+                  displayKey: ValueKey<String>(
+                    '${service.cycleNumber}_${service.operationIndex}_$opName',
                   ),
                 ),
-                Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 16),
-                  child: Text(
-                    service.started ? (op?.name ?? '') : 'Нажмите СТАРТ',
-                    key: ValueKey<String>(
-                      '${service.cycleNumber}_${service.operationIndex}_${op?.name ?? ''}',
-                    ),
-                    textAlign: TextAlign.center,
-                    maxLines: 4,
-                    overflow: TextOverflow.ellipsis,
-                    style: Theme.of(context).textTheme.headlineMedium?.copyWith(
-                          fontWeight: FontWeight.w900,
-                          fontSize: 28,
-                        ),
+                MeasurementTimerView(
+                  elapsedMs: elapsed,
+                  tickerKey: ValueKey<int>(elapsed ~/ 100),
+                ),
+                const Spacer(),
+                NextOperationView(
+                  nextNameOrDash: service.nextOperationName ?? '—',
+                  displayKey: ValueKey<String>(
+                    'next_${service.cycleNumber}_${service.operationIndex}_${service.nextOperationName ?? ''}',
                   ),
                 ),
-                const SizedBox(height: 8),
-                Text(
-                  service.paused ? 'ПАУЗА' : 'Секундомер',
-                  textAlign: TextAlign.center,
-                  style: TextStyle(
-                    fontSize: 18,
-                    color: service.paused ? Theme.of(context).colorScheme.error : null,
-                    fontWeight: FontWeight.w700,
-                  ),
+                LastTicksList(
+                  recordsNewestFirst: List<MeasurementRecordModel>.from(_recent.reversed),
                 ),
-                Text(
-                  _formatElapsed(elapsed),
-                  textAlign: TextAlign.center,
-                  style: Theme.of(context).textTheme.displaySmall?.copyWith(
-                        fontWeight: FontWeight.w700,
-                        letterSpacing: 1.2,
-                      ),
-                ),
-                const SizedBox(height: 12),
-                Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 16),
-                  child: Text(
-                    'Далее: ${service.nextOperationName ?? "—"}',
-                    key: ValueKey<String>(
-                      'next_${service.cycleNumber}_${service.operationIndex}_${service.nextOperationName ?? ""}',
-                    ),
-                    textAlign: TextAlign.center,
-                    maxLines: 2,
-                    overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w600),
-                  ),
-                ),
-                const SizedBox(height: 8),
-                Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 12),
-                  child: Row(
-                    children: [
-                      Expanded(
-                        child: FilledButton.tonal(
-                          onPressed: !service.started ? null : service.togglePause,
-                          child: Text(service.paused ? 'Продолжить' : 'Пауза'),
-                        ),
-                      ),
-                      const SizedBox(width: 8),
-                      Expanded(
-                        child: OutlinedButton(
-                          onPressed: _recent.isEmpty
-                              ? null
-                              : () async {
-                                  await service.undoLastTick();
-                                  await _refreshRecent();
-                                  setState(() {});
-                                },
-                          child: const Text('Отменить отсечку'),
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-                const SectionTitle('Последние отсечки'),
-                Expanded(
-                  child: _recent.isEmpty
-                      ? const Center(child: Text('Пока нет записей', style: TextStyle(fontSize: 16)))
-                      : ListView.builder(
-                          itemCount: _recent.length,
-                          itemBuilder: (context, i) {
-                            final r = _recent[_recent.length - 1 - i];
-                            return ListTile(
-                              title: Text(r.operationName, style: const TextStyle(fontSize: 17, fontWeight: FontWeight.w600)),
-                              subtitle: Text(
-                                'Цикл ${r.cycleNumber} · ${_formatElapsed(r.durationMs)} · ${_formatClock(r.endedAt)}',
-                              ),
-                            );
-                          },
-                        ),
-                ),
-                BigBottomAction(
-                  label: mainLabel,
+                MainMeasurementButton(
+                  label: _primaryLabel(service, opName),
                   labelKey: ValueKey<String>(
-                    'cta_${service.started}_${service.cycleNumber}_${service.operationIndex}_${op?.name ?? ""}',
+                    'cta_${service.started}_${service.paused}_${service.cycleNumber}_${service.operationIndex}_$opName',
                   ),
                   enabled: op != null,
-                  onPressed: () async {
-                    if (!service.started) {
-                      await service.start();
-                    } else {
-                      await service.completeCurrentOperation();
-                    }
-                    await _refreshRecent();
-                    setState(() {});
-                  },
+                  onPressed: op != null ? onPrimary : null,
                 ),
               ],
             ),
@@ -259,10 +259,5 @@ class _MeasurementScreenState extends State<MeasurementScreen> {
         },
       ),
     );
-  }
-
-  String _formatClock(DateTime d) {
-    final l = d.toLocal();
-    return '${l.hour.toString().padLeft(2, '0')}:${l.minute.toString().padLeft(2, '0')}:${l.second.toString().padLeft(2, '0')}';
   }
 }

@@ -12,17 +12,28 @@ class HomeShell extends StatefulWidget {
 
 class _HomeShellState extends State<HomeShell> {
   int _index = 0;
+  int _historyReloadToken = 0;
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       body: IndexedStack(
         index: _index,
-        children: const [TemplatesScreen(), HistoryScreen()],
+        children: [
+          const TemplatesScreen(),
+          HistoryScreen(key: ValueKey(_historyReloadToken)),
+        ],
       ),
       bottomNavigationBar: NavigationBar(
         selectedIndex: _index,
-        onDestinationSelected: (i) => setState(() => _index = i),
+        onDestinationSelected: (i) {
+          setState(() {
+            _index = i;
+            if (i == 1) {
+              _historyReloadToken++;
+            }
+          });
+        },
         destinations: const [
           NavigationDestination(
             icon: Icon(Icons.list_alt_outlined),

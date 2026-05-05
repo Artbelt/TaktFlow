@@ -5,6 +5,7 @@ import 'package:flutter/foundation.dart';
 import '../database/app_database.dart';
 import '../models/measurement_record_model.dart';
 import '../models/operation_model.dart';
+import 'redo_undo_payload.dart';
 
 /// Управляет циклом замера: старт, пауза, отсечки, откат.
 ///
@@ -110,9 +111,10 @@ class MeasurementTimerService extends ChangeNotifier {
 
   /// Завершает текущую операцию, пишет запись, переходит к следующей
   /// или к следующему циклу (после последней операции).
-  Future<void> completeCurrentOperation() async {
-    if (!_started || _sessionId == null || _operations.isEmpty) return;
-    if (_opWallStart == null) return;
+  /// Возвращает `true`, если была завершена последняя операция цикла.
+  Future<bool> completeCurrentOperation() async {
+    if (!_started || _sessionId == null || _operations.isEmpty) return false;
+    if (_opWallStart == null) return false;
 
     final now = DateTime.now();
     final op = _operations[_operationIndex];
@@ -139,6 +141,7 @@ class MeasurementTimerService extends ChangeNotifier {
     }
     _resetTimerForNewOperation(now);
     notifyListeners();
+    return isLast;
   }
 
   void togglePause() {
@@ -157,18 +160,51 @@ class MeasurementTimerService extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// Удаляет последнюю запись и возвращает указатель на эту операцию;
-  /// секундомер текущей операции начинается заново (как новый замер шага).
+  /// Удаляет последнюю запись ([undoLastTickForRedo] с данными для «Вернуть»).
   Future<void> undoLastTick() async {
-    if (_sessionId == null) return;
+    await undoLastTickForRedo();
+  }
+
+  /// Как [undoLastTick], плюс данные для восстановления (snackbar «Вернуть»).
+  Future<RedoUndoPayload?> undoLastTickForRedo() async {
+    if (_sessionId == null) return null;
+
+    final nextIdx = _operationIndex;
+    final nextCycle = _cycleNumber;
+
     final last = await _db.getLastRecordForSession(_sessionId!);
-    if (last == null) return;
+    if (last == null) return null;
 
     await _db.deleteRecord(last.id);
 
     final idx = _operations.indexWhere((o) => o.id == last.operationId);
     _operationIndex = idx >= 0 ? idx : 0;
     _cycleNumber = last.cycleNumber;
+    _resetTimerForNewOperation(DateTime.now());
+    notifyListeners();
+    return RedoUndoPayload(
+      snapshot: last,
+      nextOperationIndex: nextIdx,
+      nextCycleNumber: nextCycle,
+    );
+  }
+
+  Future<void> redoUndoneTick(RedoUndoPayload payload) async {
+    if (_sessionId == null) return;
+    final r = payload.snapshot;
+    await _db.insertRecord(
+      sessionId: _sessionId!,
+      templateId: r.templateId,
+      operationId: r.operationId,
+      operationName: r.operationName,
+      cycleNumber: r.cycleNumber,
+      startedAt: r.startedAt,
+      endedAt: r.endedAt,
+      durationMs: r.durationMs,
+      comment: r.comment,
+    );
+    _operationIndex = payload.nextOperationIndex;
+    _cycleNumber = payload.nextCycleNumber;
     _resetTimerForNewOperation(DateTime.now());
     notifyListeners();
   }
