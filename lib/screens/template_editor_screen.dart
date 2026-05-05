@@ -1,6 +1,11 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 import '../database/app_database.dart';
+import '../widgets/template_editor/add_operation_footer.dart';
+import '../widgets/template_editor/operation_item_card.dart';
+import '../widgets/template_editor/paste_operations_dialog.dart';
+import '../widgets/template_editor/template_title_field.dart';
 
 class TemplateEditorScreen extends StatefulWidget {
   const TemplateEditorScreen({super.key, this.templateId});
@@ -16,6 +21,7 @@ class _TemplateEditorScreenState extends State<TemplateEditorScreen> {
   final _db = AppDatabase.instance;
   final _nameCtrl = TextEditingController();
   final List<TextEditingController> _opCtrls = [];
+  final List<FocusNode> _opFocus = [];
   bool _loading = true;
 
   @override
@@ -29,11 +35,9 @@ class _TemplateEditorScreenState extends State<TemplateEditorScreen> {
     if (id == null) {
       setState(() {
         _loading = false;
-        _opCtrls.add(TextEditingController(text: 'Взять заготовку'));
-        _opCtrls.add(TextEditingController(text: 'Установить'));
-        _opCtrls.add(TextEditingController(text: 'Закрутить'));
-        _opCtrls.add(TextEditingController(text: 'Проверить'));
-        _opCtrls.add(TextEditingController(text: 'Уложить'));
+        for (final preset in ['Взять заготовку', 'Установить', 'Закрутить', 'Проверить', 'Уложить']) {
+          _pushRow(TextEditingController(text: preset));
+        }
       });
       return;
     }
@@ -46,9 +50,14 @@ class _TemplateEditorScreenState extends State<TemplateEditorScreen> {
     }
     _nameCtrl.text = t.name;
     for (final o in ops) {
-      _opCtrls.add(TextEditingController(text: o.name));
+      _pushRow(TextEditingController(text: o.name));
     }
     setState(() => _loading = false);
+  }
+
+  void _pushRow(TextEditingController c) {
+    _opCtrls.add(c);
+    _opFocus.add(FocusNode());
   }
 
   @override
@@ -57,16 +66,78 @@ class _TemplateEditorScreenState extends State<TemplateEditorScreen> {
     for (final c in _opCtrls) {
       c.dispose();
     }
+    for (final f in _opFocus) {
+      f.dispose();
+    }
     super.dispose();
   }
 
-  void _addOperation() {
-    setState(() => _opCtrls.add(TextEditingController()));
+  void _addOperation({required bool autofocus}) {
+    HapticFeedback.lightImpact();
+    setState(() {
+      _pushRow(TextEditingController());
+    });
+    if (autofocus) {
+      final i = _opCtrls.length - 1;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted) return;
+        FocusScope.of(context).requestFocus(_opFocus[i]);
+        final t = _opCtrls[i].text;
+        _opCtrls[i].selection = TextSelection.collapsed(offset: t.length);
+      });
+    }
   }
 
-  void _removeAt(int i) {
+  Future<void> _pasteList() async {
+    final lines = await showPasteOperationsDialog(context);
+    if (lines == null || lines.isEmpty) return;
+    HapticFeedback.lightImpact();
     setState(() {
-      _opCtrls.removeAt(i).dispose();
+      for (final line in lines) {
+        _pushRow(TextEditingController(text: line));
+      }
+    });
+  }
+
+  void _removeRowAt(int index) {
+    setState(() {
+      _opCtrls[index].dispose();
+      _opFocus[index].dispose();
+      _opCtrls.removeAt(index);
+      _opFocus.removeAt(index);
+    });
+  }
+
+  void _onReorder(int oldI, int newI) {
+    HapticFeedback.selectionClick();
+    setState(() {
+      if (newI > oldI) newI -= 1;
+      final c = _opCtrls.removeAt(oldI);
+      _opCtrls.insert(newI, c);
+      final f = _opFocus.removeAt(oldI);
+      _opFocus.insert(newI, f);
+    });
+  }
+
+  void _onSubmitRow(TextEditingController c) {
+    final index = _opCtrls.indexOf(c);
+    if (index < 0) return;
+    final text = c.text.trim();
+    if (text.isEmpty) {
+      FocusScope.of(context).unfocus();
+      return;
+    }
+    HapticFeedback.selectionClick();
+    setState(() {
+      _opCtrls.insert(index + 1, TextEditingController());
+      _opFocus.insert(index + 1, FocusNode());
+    });
+    final newIndex = index + 1;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      if (newIndex < _opFocus.length) {
+        FocusScope.of(context).requestFocus(_opFocus[newIndex]);
+      }
     });
   }
 
@@ -102,10 +173,17 @@ class _TemplateEditorScreenState extends State<TemplateEditorScreen> {
     if (_loading) {
       return const Scaffold(body: Center(child: CircularProgressIndicator()));
     }
+
     return Scaffold(
+      resizeToAvoidBottomInset: true,
       appBar: AppBar(
         title: Text(widget.templateId == null ? 'Новый шаблон' : 'Редактирование'),
         actions: [
+          IconButton(
+            tooltip: 'Вставить список операций',
+            icon: const Icon(Icons.playlist_add_outlined),
+            onPressed: _pasteList,
+          ),
           TextButton(
             onPressed: _save,
             child: const Text('Сохранить', style: TextStyle(fontSize: 16, fontWeight: FontWeight.w700)),
@@ -113,67 +191,83 @@ class _TemplateEditorScreenState extends State<TemplateEditorScreen> {
         ],
       ),
       body: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
+          TemplateTitleField(controller: _nameCtrl),
           Padding(
-            padding: const EdgeInsets.all(16),
-            child: TextField(
-              controller: _nameCtrl,
-              decoration: const InputDecoration(
-                labelText: 'Название шаблона',
-                border: OutlineInputBorder(),
-              ),
-              style: const TextStyle(fontSize: 18),
-              textCapitalization: TextCapitalization.sentences,
-            ),
-          ),
-          const Align(
-            alignment: Alignment.centerLeft,
-            child: Padding(
-              padding: EdgeInsets.symmetric(horizontal: 16),
-              child: Text('Операции (удерживайте за ⋮⋮ для перетаскивания)', style: TextStyle(fontSize: 14)),
+            padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+            child: Text(
+              'Операции · удерживайте ⋮⋮ для переноса · свайп влево — удалить',
+              style: Theme.of(context).textTheme.labelLarge?.copyWith(
+                    color: Theme.of(context).colorScheme.onSurfaceVariant,
+                    fontWeight: FontWeight.w500,
+                  ),
             ),
           ),
           Expanded(
-            child: ReorderableListView.builder(
-              padding: const EdgeInsets.only(bottom: 96),
-              itemCount: _opCtrls.length,
-              onReorder: (oldI, newI) {
-                setState(() {
-                  if (newI > oldI) newI -= 1;
-                  final c = _opCtrls.removeAt(oldI);
-                  _opCtrls.insert(newI, c);
-                });
-              },
-              itemBuilder: (context, index) {
-                final c = _opCtrls[index];
-                return Card(
-                  key: ValueKey(c),
-                  margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-                  child: ListTile(
-                    leading: const Icon(Icons.drag_handle),
-                    title: TextField(
-                      controller: c,
-                      decoration: const InputDecoration(border: InputBorder.none, hintText: 'Название операции'),
-                      style: const TextStyle(fontSize: 18),
-                      textCapitalization: TextCapitalization.sentences,
-                      keyboardType: TextInputType.multiline,
-                      minLines: 1,
-                      maxLines: 3,
+            child: _opCtrls.isEmpty
+                ? Center(
+                    child: Padding(
+                      padding: const EdgeInsets.all(24),
+                      child: Text(
+                        'Добавьте операции для хронометража',
+                        textAlign: TextAlign.center,
+                        style: Theme.of(context).textTheme.titleLarge?.copyWith(
+                              color: Theme.of(context).colorScheme.onSurfaceVariant,
+                              fontWeight: FontWeight.w600,
+                            ),
+                      ),
                     ),
-                    trailing: IconButton(
-                      icon: const Icon(Icons.close),
-                      onPressed: () => _removeAt(index),
-                    ),
+                  )
+                : ReorderableListView.builder(
+                    padding: const EdgeInsets.only(bottom: 12),
+                    buildDefaultDragHandles: false,
+                    itemCount: _opCtrls.length,
+                    onReorder: _onReorder,
+                    proxyDecorator: (child, index, animation) {
+                      return AnimatedBuilder(
+                        animation: animation,
+                        builder: (context, _) {
+                          final t = CurvedAnimation(parent: animation, curve: Curves.easeInOut);
+                          return Transform.scale(
+                            scale: 1.0 + 0.02 * t.value,
+                            child: Material(
+                              elevation: 6 * t.value,
+                              borderRadius: BorderRadius.circular(16),
+                              color: Colors.transparent,
+                              child: child,
+                            ),
+                          );
+                        },
+                      );
+                    },
+                    itemBuilder: (context, index) {
+                      final c = _opCtrls[index];
+                      final f = _opFocus[index];
+                      return OperationItemCard(
+                        key: ValueKey(c),
+                        displayIndex: index + 1,
+                        reorderIndex: index,
+                        controller: c,
+                        focusNode: f,
+                        onDismissSwipe: () {
+                          final i = _opCtrls.indexOf(c);
+                          if (i >= 0) _removeRowAt(i);
+                        },
+                        onRemovePressed: () {
+                          final i = _opCtrls.indexOf(c);
+                          if (i >= 0) _removeRowAt(i);
+                        },
+                        onSubmitRow: _onSubmitRow,
+                        onDragHandleDown: () => HapticFeedback.selectionClick(),
+                      );
+                    },
                   ),
-                );
-              },
-            ),
           ),
         ],
       ),
-      floatingActionButton: FloatingActionButton(
-        onPressed: _addOperation,
-        child: const Icon(Icons.add),
+      bottomNavigationBar: AddOperationFooter(
+        onPressed: () => _addOperation(autofocus: true),
       ),
     );
   }

@@ -1,7 +1,9 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 import '../database/app_database.dart';
 import '../models/template_model.dart';
+import '../widgets/template_editor/template_editor_helpers.dart';
 import 'measurement_screen.dart';
 import 'template_editor_screen.dart';
 
@@ -41,6 +43,7 @@ class _TemplatesScreenState extends State<TemplatesScreen> {
       ),
     );
     if (ok == true && mounted) {
+      HapticFeedback.mediumImpact();
       await _db.deleteTemplate(t.id);
       _reload();
     }
@@ -90,7 +93,7 @@ class _TemplatesScreenState extends State<TemplatesScreen> {
               child: Padding(
                 padding: const EdgeInsets.all(24),
                 child: Text(
-                  'Нет шаблонов.\nНажмите «Создать шаблон».',
+                  'Создайте первый шаблон.\nКнопка «Создать шаблон» внизу.',
                   textAlign: TextAlign.center,
                   style: Theme.of(context).textTheme.titleLarge,
                 ),
@@ -109,19 +112,32 @@ class _TemplatesScreenState extends State<TemplatesScreen> {
                   builder: (context, countSnap) {
                     final cnt = countSnap.data ?? 0;
                     return Card(
-                      margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                      margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 5),
                       child: ListTile(
-                        contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-                        title: Text(t.name, style: const TextStyle(fontSize: 20, fontWeight: FontWeight.w700)),
+                        contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
+                        visualDensity: VisualDensity.compact,
+                        title: Text(
+                          t.name,
+                          style: const TextStyle(fontSize: 21, fontWeight: FontWeight.w800, height: 1.15),
+                          maxLines: 2,
+                          overflow: TextOverflow.ellipsis,
+                        ),
                         subtitle: Text(
-                          'Операций: $cnt · Создан: ${_formatDate(t.createdAt)}',
-                          style: const TextStyle(fontSize: 15),
+                          '${operationsCountLabelRu(cnt)} • ${_formatDate(t.createdAt)}',
+                          style: TextStyle(
+                            fontSize: 13.5,
+                            fontWeight: FontWeight.w500,
+                            color: Theme.of(context).colorScheme.onSurfaceVariant,
+                          ),
                         ),
                         trailing: Row(
                           mainAxisSize: MainAxisSize.min,
                           children: [
                             IconButton(
-                              icon: const Icon(Icons.edit_outlined),
+                              constraints: const BoxConstraints(minWidth: 40, minHeight: 40),
+                              padding: EdgeInsets.zero,
+                              iconSize: 21,
+                              icon: Icon(Icons.edit_outlined, color: Theme.of(context).colorScheme.primary),
                               tooltip: 'Изменить',
                               onPressed: () async {
                                 await Navigator.push<bool>(
@@ -134,7 +150,13 @@ class _TemplatesScreenState extends State<TemplatesScreen> {
                               },
                             ),
                             IconButton(
-                              icon: const Icon(Icons.delete_outline),
+                              constraints: const BoxConstraints(minWidth: 40, minHeight: 40),
+                              padding: EdgeInsets.zero,
+                              iconSize: 21,
+                              icon: Icon(
+                                Icons.delete_outline,
+                                color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.75),
+                              ),
                               tooltip: 'Удалить',
                               onPressed: () => _confirmDelete(t),
                             ),
