@@ -2,6 +2,8 @@ import 'package:flutter/material.dart';
 
 import '../database/app_database.dart';
 import '../models/measurement_session_model.dart';
+import '../services/export_service.dart';
+import 'analytics/session_analytics_screen.dart';
 import 'session_detail_screen.dart';
 
 class HistoryScreen extends StatefulWidget {
@@ -14,6 +16,7 @@ class HistoryScreen extends StatefulWidget {
 class _HistoryScreenState extends State<HistoryScreen> {
   final _db = AppDatabase.instance;
   late Future<_HistoryData> _future;
+  final Set<int> _exportingSessionIds = <int>{};
 
   @override
   void initState() {
@@ -33,6 +36,41 @@ class _HistoryScreenState extends State<HistoryScreen> {
     setState(() {
       _future = _load();
     });
+  }
+
+  Future<void> _exportSession(MeasurementSessionModel s) async {
+    if (_exportingSessionIds.contains(s.id)) return;
+    setState(() => _exportingSessionIds.add(s.id));
+    try {
+      final template = await _db.getTemplate(s.templateId);
+      final records = await _db.getRecordsForSession(s.id);
+      if (!mounted) return;
+      if (template == null || records.isEmpty) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Нет данных для экспорта')),
+        );
+        return;
+      }
+      final file = await ExportService.exportSessionToCsv(
+        session: s,
+        template: template,
+        records: records,
+      );
+      await ExportService.shareCsvFile(file);
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('CSV экспортирован')),
+      );
+    } catch (_) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Ошибка экспорта CSV')),
+      );
+    } finally {
+      if (mounted) {
+        setState(() => _exportingSessionIds.remove(s.id));
+      }
+    }
   }
 
   Future<void> _confirmDeleteSession(MeasurementSessionModel s, String templateName) async {
@@ -151,10 +189,40 @@ class _HistoryScreenState extends State<HistoryScreen> {
                       'Циклов (max): ${it.cycles} · Отсечек: ${it.operations}',
                       style: const TextStyle(fontSize: 15),
                     ),
-                    trailing: IconButton(
-                      icon: const Icon(Icons.delete_outline),
-                      tooltip: 'Удалить замер',
-                      onPressed: () => _confirmDeleteSession(s, it.templateName),
+                    trailing: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        IconButton(
+                          icon: _exportingSessionIds.contains(s.id)
+                              ? const SizedBox(
+                                  width: 18,
+                                  height: 18,
+                                  child: CircularProgressIndicator(strokeWidth: 2.2),
+                                )
+                              : const Icon(Icons.ios_share_outlined),
+                          tooltip: 'Экспорт CSV',
+                          onPressed: _exportingSessionIds.contains(s.id)
+                              ? null
+                              : () => _exportSession(s),
+                        ),
+                        IconButton(
+                          icon: const Icon(Icons.analytics_outlined),
+                          tooltip: 'Аналитика',
+                          onPressed: () async {
+                            await Navigator.push<void>(
+                              context,
+                              MaterialPageRoute<void>(
+                                builder: (_) => SessionAnalyticsScreen(sessionId: s.id),
+                              ),
+                            );
+                          },
+                        ),
+                        IconButton(
+                          icon: const Icon(Icons.delete_outline),
+                          tooltip: 'Удалить замер',
+                          onPressed: () => _confirmDeleteSession(s, it.templateName),
+                        ),
+                      ],
                     ),
                     onTap: () async {
                       await Navigator.push<void>(

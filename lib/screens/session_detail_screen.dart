@@ -1,11 +1,10 @@
 import 'package:flutter/material.dart';
-import 'package:intl/intl.dart';
-
 import '../database/app_database.dart';
 import '../models/measurement_record_model.dart';
 import '../models/measurement_session_model.dart';
 import '../models/template_model.dart';
-import '../services/csv_export_service.dart';
+import '../services/export_service.dart';
+import 'analytics/session_analytics_screen.dart';
 
 class SessionDetailScreen extends StatefulWidget {
   const SessionDetailScreen({super.key, required this.sessionId});
@@ -19,6 +18,7 @@ class SessionDetailScreen extends StatefulWidget {
 class _SessionDetailScreenState extends State<SessionDetailScreen> {
   final _db = AppDatabase.instance;
   late Future<_DetailData> _future;
+  bool _isExporting = false;
 
   @override
   void initState() {
@@ -37,13 +37,38 @@ class _SessionDetailScreenState extends State<SessionDetailScreen> {
   }
 
   Future<void> _export(_DetailData data) async {
-    if (data.template == null) return;
-    final csv = CsvExportService.buildCsv(
-      records: data.records,
-      template: data.template!,
-    );
-    final name = 'taktflow_${widget.sessionId}_${DateTime.now().millisecondsSinceEpoch}.csv';
-    await CsvExportService.shareCsv(csv, name);
+    if (_isExporting) return;
+    if (data.template == null || data.session == null) return;
+    if (data.records.isEmpty) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Нет данных для экспорта')),
+      );
+      return;
+    }
+
+    setState(() => _isExporting = true);
+    try {
+      final file = await ExportService.exportSessionToCsv(
+        session: data.session!,
+        template: data.template!,
+        records: data.records,
+      );
+      await ExportService.shareCsvFile(file);
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('CSV экспортирован')),
+        );
+      }
+    } catch (_) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Ошибка экспорта CSV')),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _isExporting = false);
+    }
   }
 
   @override
@@ -53,17 +78,31 @@ class _SessionDetailScreenState extends State<SessionDetailScreen> {
         title: const Text('Таблица замера'),
         actions: [
           IconButton(
-            icon: const Icon(Icons.share_outlined),
-            tooltip: 'Экспорт CSV',
+            icon: const Icon(Icons.analytics_outlined),
+            tooltip: 'Аналитика',
             onPressed: () async {
+              await Navigator.push<void>(
+                context,
+                MaterialPageRoute<void>(
+                  builder: (_) => SessionAnalyticsScreen(sessionId: widget.sessionId),
+                ),
+              );
+            },
+          ),
+          IconButton(
+            icon: _isExporting
+                ? const SizedBox(
+                    width: 18,
+                    height: 18,
+                    child: CircularProgressIndicator(strokeWidth: 2.2),
+                  )
+                : const Icon(Icons.share_outlined),
+            tooltip: 'Экспорт CSV',
+            onPressed: _isExporting
+                ? null
+                : () async {
               final data = await _load();
               if (!context.mounted) return;
-              if (data.records.isEmpty) {
-                ScaffoldMessenger.of(context).showSnackBar(
-                  const SnackBar(content: Text('Нет строк для экспорта')),
-                );
-                return;
-              }
               await _export(data);
             },
           ),
@@ -83,7 +122,7 @@ class _SessionDetailScreenState extends State<SessionDetailScreen> {
             return const Center(child: Text('В этой сессии нет отсечек'));
           }
 
-          final df = DateFormat('yyyy-MM-dd HH:mm:ss');
+          final pivot = _buildPivot(data.records);
           return LayoutBuilder(
             builder: (context, c) {
               return SingleChildScrollView(
@@ -96,27 +135,38 @@ class _SessionDetailScreenState extends State<SessionDetailScreen> {
                       headingRowColor: WidgetStatePropertyAll(
                         Theme.of(context).colorScheme.surfaceContainerHighest,
                       ),
-                      columns: const [
-                        DataColumn(label: Text('Дата/время', style: TextStyle(fontWeight: FontWeight.w800))),
-                        DataColumn(label: Text('Шаблон', style: TextStyle(fontWeight: FontWeight.w800))),
-                        DataColumn(label: Text('Цикл', style: TextStyle(fontWeight: FontWeight.w800))),
-                        DataColumn(label: Text('Операция', style: TextStyle(fontWeight: FontWeight.w800))),
-                        DataColumn(label: Text('Сек', style: TextStyle(fontWeight: FontWeight.w800))),
-                        DataColumn(label: Text('Коммент.', style: TextStyle(fontWeight: FontWeight.w800))),
+                      columns: [
+                        const DataColumn(
+                          label: Text('Операция', style: TextStyle(fontWeight: FontWeight.w800)),
+                        ),
+                        ...pivot.cycles.map(
+                          (c) => DataColumn(
+                            label: Text('Ц$c', style: const TextStyle(fontWeight: FontWeight.w800)),
+                          ),
+                        ),
                       ],
-                      rows: data.records.map((r) {
-                        final tpl = data.template?.name ?? '—';
-                        final secs = (r.durationMs / 1000).toStringAsFixed(2);
-                        return DataRow(
-                          cells: [
-                            DataCell(Text(df.format(r.endedAt.toLocal()), style: const TextStyle(fontSize: 15))),
-                            DataCell(Text(tpl, style: const TextStyle(fontSize: 15))),
-                            DataCell(Text('${r.cycleNumber}', style: const TextStyle(fontSize: 15))),
-                            DataCell(Text(r.operationName, style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w600))),
-                            DataCell(Text(secs, style: const TextStyle(fontSize: 15))),
-                            DataCell(Text(r.comment ?? '', style: const TextStyle(fontSize: 15))),
-                          ],
-                        );
+                      rows: pivot.operationOrder.map((operationName) {
+                        final cells = <DataCell>[
+                          DataCell(
+                            Text(
+                              operationName,
+                              style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
+                            ),
+                          ),
+                        ];
+                        for (final cycle in pivot.cycles) {
+                          final ms = pivot.values[operationName]?[cycle];
+                          final secs = ms == null ? '' : (ms / 1000.0).toStringAsFixed(2);
+                          cells.add(
+                            DataCell(
+                              Text(
+                                secs.isEmpty ? '—' : '$secs с',
+                                style: const TextStyle(fontSize: 15),
+                              ),
+                            ),
+                          );
+                        }
+                        return DataRow(cells: cells);
                       }).toList(),
                     ),
                   ),
@@ -127,6 +177,26 @@ class _SessionDetailScreenState extends State<SessionDetailScreen> {
         },
       ),
     );
+  }
+
+  _PivotData _buildPivot(List<MeasurementRecordModel> records) {
+    final sorted = List<MeasurementRecordModel>.from(records)
+      ..sort((a, b) => a.id.compareTo(b.id));
+    final operationOrder = <String>[];
+    final values = <String, Map<int, int>>{};
+    final cyclesSet = <int>{};
+
+    for (final r in sorted) {
+      cyclesSet.add(r.cycleNumber);
+      values.putIfAbsent(r.operationName, () {
+        operationOrder.add(r.operationName);
+        return <int, int>{};
+      });
+      values[r.operationName]![r.cycleNumber] = r.durationMs;
+    }
+
+    final cycles = cyclesSet.toList()..sort();
+    return _PivotData(operationOrder: operationOrder, cycles: cycles, values: values);
   }
 }
 
@@ -144,4 +214,16 @@ class _DetailData {
   final MeasurementSessionModel? session;
   final TemplateModel? template;
   final List<MeasurementRecordModel> records;
+}
+
+class _PivotData {
+  _PivotData({
+    required this.operationOrder,
+    required this.cycles,
+    required this.values,
+  });
+
+  final List<String> operationOrder;
+  final List<int> cycles;
+  final Map<String, Map<int, int>> values;
 }

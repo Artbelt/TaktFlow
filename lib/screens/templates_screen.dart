@@ -64,6 +64,51 @@ class _TemplatesScreenState extends State<TemplatesScreen> {
     );
   }
 
+  Future<void> _duplicateTemplate(TemplateModel t) async {
+    final nameCtrl = TextEditingController(text: '${t.name} (копия)');
+    final newName = await showDialog<String>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Название копии'),
+        content: TextField(
+          controller: nameCtrl,
+          autofocus: true,
+          decoration: const InputDecoration(
+            labelText: 'Название шаблона',
+            border: OutlineInputBorder(),
+          ),
+          textCapitalization: TextCapitalization.sentences,
+          onSubmitted: (value) => Navigator.pop(ctx, value.trim()),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('Отмена'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(ctx, nameCtrl.text.trim()),
+            child: const Text('Создать'),
+          ),
+        ],
+      ),
+    );
+    nameCtrl.dispose();
+    if (!mounted || newName == null) return;
+    if (newName.trim().isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Введите название копии')),
+      );
+      return;
+    }
+    await _db.duplicateTemplate(t.id, newName: newName);
+    if (!mounted) return;
+    HapticFeedback.lightImpact();
+    _reload();
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('Шаблон скопирован')),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -133,6 +178,17 @@ class _TemplatesScreenState extends State<TemplatesScreen> {
                         trailing: Row(
                           mainAxisSize: MainAxisSize.min,
                           children: [
+                            IconButton(
+                              constraints: const BoxConstraints(minWidth: 40, minHeight: 40),
+                              padding: EdgeInsets.zero,
+                              iconSize: 21,
+                              icon: Icon(
+                                Icons.content_copy_outlined,
+                                color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.85),
+                              ),
+                              tooltip: 'Копировать',
+                              onPressed: () => _duplicateTemplate(t),
+                            ),
                             IconButton(
                               constraints: const BoxConstraints(minWidth: 40, minHeight: 40),
                               padding: EdgeInsets.zero,

@@ -117,6 +117,48 @@ CREATE TABLE measurement_records (
     await db.delete('templates', where: 'id = ?', whereArgs: [id]);
   }
 
+  /// Создаёт копию шаблона вместе с операциями.
+  Future<int> duplicateTemplate(int sourceTemplateId, {String? newName}) async {
+    final db = await database;
+    return db.transaction<int>((txn) async {
+      final rows = await txn.query(
+        'templates',
+        where: 'id = ?',
+        whereArgs: [sourceTemplateId],
+        limit: 1,
+      );
+      if (rows.isEmpty) {
+        throw StateError('Template not found: $sourceTemplateId');
+      }
+      final source = TemplateModel.fromMap(rows.first);
+      final createdAt = DateTime.now();
+      final name = (newName == null || newName.trim().isEmpty)
+          ? '${source.name} (копия)'
+          : newName.trim();
+
+      final newTemplateId = await txn.insert('templates', {
+        'name': name,
+        'createdAt': createdAt.toIso8601String(),
+      });
+
+      final sourceOps = await txn.query(
+        'operations',
+        where: 'templateId = ?',
+        whereArgs: [sourceTemplateId],
+        orderBy: 'orderIndex ASC',
+      );
+
+      for (final op in sourceOps) {
+        await txn.insert('operations', {
+          'templateId': newTemplateId,
+          'name': op['name'],
+          'orderIndex': op['orderIndex'],
+        });
+      }
+      return newTemplateId;
+    });
+  }
+
   Future<List<OperationModel>> getOperations(int templateId) async {
     final db = await database;
     final rows = await db.query(
