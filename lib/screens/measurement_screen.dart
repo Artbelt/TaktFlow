@@ -146,6 +146,28 @@ class _MeasurementScreenState extends State<MeasurementScreen> {
     HapticFeedback.lightImpact();
   }
 
+  Future<void> _finishPressed() async {
+    final s = _service;
+    if (s == null) return;
+    if (!s.started) {
+      if (mounted) Navigator.pop(context);
+      return;
+    }
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Завершить замер?'),
+        content: const Text('Сессия будет завершена и сохранена в истории.'),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Отмена')),
+          FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Завершить')),
+        ],
+      ),
+    );
+    if (ok != true || !mounted) return;
+    await _leave();
+  }
+
   String _primaryLabel(MeasurementTimerService service, String opName) {
     if (!service.started) return 'СТАРТ';
     if (service.paused) return 'ПРОДОЛЖИТЬ: $opName';
@@ -209,12 +231,7 @@ class _MeasurementScreenState extends State<MeasurementScreen> {
           return Scaffold(
             appBar: MeasurementTopBar(
               title: _template?.name ?? 'Замер',
-              started: service.started,
-              paused: service.paused,
-              canUndo: canUndo,
               onBack: _handlePop,
-              onTogglePause: _togglePausePressed,
-              onUndo: _undoPressed,
             ),
             body: Column(
               crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -244,6 +261,45 @@ class _MeasurementScreenState extends State<MeasurementScreen> {
                 ),
                 LastTicksList(
                   recordsNewestFirst: List<MeasurementRecordModel>.from(_recent.reversed),
+                ),
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(12, 0, 12, 6),
+                  child: Row(
+                    children: [
+                      Expanded(
+                        child: FilledButton.tonal(
+                          onPressed: service.started ? _togglePausePressed : null,
+                          style: FilledButton.styleFrom(
+                            minimumSize: const Size.fromHeight(46),
+                          ),
+                          child: Icon(
+                            service.paused ? Icons.play_arrow_rounded : Icons.pause_rounded,
+                            size: 22,
+                          ),
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: OutlinedButton(
+                          style: OutlinedButton.styleFrom(
+                            minimumSize: const Size.fromHeight(46),
+                          ),
+                          onPressed: canUndo ? _undoPressed : null,
+                          child: const Icon(Icons.undo_rounded, size: 22),
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: OutlinedButton(
+                          style: OutlinedButton.styleFrom(
+                            minimumSize: const Size.fromHeight(46),
+                          ),
+                          onPressed: _finishPressed,
+                          child: const Icon(Icons.stop_circle_outlined, size: 22),
+                        ),
+                      ),
+                    ],
+                  ),
                 ),
                 MainMeasurementButton(
                   label: _primaryLabel(service, opName),
