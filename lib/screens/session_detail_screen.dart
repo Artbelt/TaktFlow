@@ -1,9 +1,12 @@
 import 'package:flutter/material.dart';
+import 'package:share_plus/share_plus.dart';
 import '../database/app_database.dart';
 import '../models/measurement_record_model.dart';
 import '../models/measurement_session_model.dart';
 import '../models/template_model.dart';
+import '../services/analytics_service.dart';
 import '../services/export_service.dart';
+import '../services/pdf_report_service.dart';
 import 'analytics/session_analytics_screen.dart';
 
 class SessionDetailScreen extends StatefulWidget {
@@ -19,6 +22,7 @@ class _SessionDetailScreenState extends State<SessionDetailScreen> {
   final _db = AppDatabase.instance;
   late Future<_DetailData> _future;
   bool _isExporting = false;
+  bool _isPdfExporting = false;
 
   @override
   void initState() {
@@ -88,6 +92,23 @@ class _SessionDetailScreenState extends State<SessionDetailScreen> {
                 ),
               );
             },
+          ),
+          IconButton(
+            icon: _isPdfExporting
+                ? const SizedBox(
+                    width: 18,
+                    height: 18,
+                    child: CircularProgressIndicator(strokeWidth: 2.2),
+                  )
+                : const Icon(Icons.picture_as_pdf_outlined),
+            tooltip: 'Экспорт PDF',
+            onPressed: _isPdfExporting
+                ? null
+                : () async {
+                    final data = await _load();
+                    if (!context.mounted) return;
+                    await _exportPdf(data);
+                  },
           ),
           IconButton(
             icon: _isExporting
@@ -197,6 +218,52 @@ class _SessionDetailScreenState extends State<SessionDetailScreen> {
 
     final cycles = cyclesSet.toList()..sort();
     return _PivotData(operationOrder: operationOrder, cycles: cycles, values: values);
+  }
+
+  Future<void> _exportPdf(_DetailData data) async {
+    if (_isPdfExporting) return;
+    if (data.session == null || data.template == null) return;
+    if (data.records.isEmpty) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Нет данных для отчёта')),
+      );
+      return;
+    }
+
+    setState(() => _isPdfExporting = true);
+    try {
+      final ops = await _db.getOperations(data.session!.templateId);
+      final analytics = AnalyticsService.calculateSessionAnalytics(
+        records: data.records,
+        templateOperations: ops,
+      );
+      final file = await PdfReportService.exportSessionReportPdf(
+        session: data.session!,
+        template: data.template!,
+        records: data.records,
+        analytics: analytics,
+      );
+      await SharePlus.instance.share(
+        ShareParams(
+          files: [XFile(file.path)],
+          text: 'PDF-отчёт TaktFlow',
+        ),
+      );
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('PDF-отчёт создан')),
+        );
+      }
+    } catch (_) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Ошибка создания PDF')),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _isPdfExporting = false);
+    }
   }
 }
 

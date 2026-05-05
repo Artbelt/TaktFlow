@@ -180,7 +180,14 @@ class MeasurementTimerService extends ChangeNotifier {
     final idx = _operations.indexWhere((o) => o.id == last.operationId);
     _operationIndex = idx >= 0 ? idx : 0;
     _cycleNumber = last.cycleNumber;
-    _resetTimerForNewOperation(DateTime.now());
+
+    // Восстанавливаем таймер так, как будто ошибочной отсечки не было:
+    // старт операции остаётся прежним, поэтому время «после ошибочного тапа»
+    // автоматически добавится к текущему хронометражу.
+    _opWallStart = last.startedAt;
+    _pauseAccumMs = 0;
+    _pauseStartedAt = null;
+    _paused = false;
     notifyListeners();
     return RedoUndoPayload(
       snapshot: last,
