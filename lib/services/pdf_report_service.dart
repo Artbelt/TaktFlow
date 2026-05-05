@@ -170,7 +170,7 @@ class PdfReportService {
                 .toList(),
           ),
           pw.SizedBox(height: 12),
-          pw.Text('Raw Data (циклы вбок)', style: pw.TextStyle(fontSize: 16, fontWeight: pw.FontWeight.bold)),
+          pw.Text('Raw Data', style: pw.TextStyle(fontSize: 16, fontWeight: pw.FontWeight.bold)),
           pw.SizedBox(height: 6),
           if (records.length > 300)
             pw.Padding(

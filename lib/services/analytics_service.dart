@@ -7,20 +7,72 @@ class AnalyticsService {
     required List<MeasurementRecordModel> records,
     required List<OperationModel> templateOperations,
   }) {
+    final normalizedTemplateNames = templateOperations
+        .map((o) => _normalizeOpName(o.name))
+        .where((n) => n.isNotEmpty)
+        .toSet();
     final opIds = templateOperations.map((o) => o.id).toSet();
-    final requiredOpsCount = opIds.length;
+    final requiredOpsCountById = opIds.length;
+    final requiredOpsCountByName = normalizedTemplateNames.length;
     final byCycle = <int, List<MeasurementRecordModel>>{};
 
     for (final r in records) {
       byCycle.putIfAbsent(r.cycleNumber, () => []).add(r);
     }
 
-    final completedCycleRecords = <MeasurementRecordModel>[];
-    for (final entry in byCycle.entries) {
-      final cycleOps = entry.value.map((r) => r.operationId).toSet();
-      if (cycleOps.length == requiredOpsCount && cycleOps.containsAll(opIds)) {
-        completedCycleRecords.addAll(entry.value);
+    List<MeasurementRecordModel> pickCompleted({
+      required bool useTemplateRules,
+      Set<String>? fallbackRequiredNames,
+    }) {
+      final out = <MeasurementRecordModel>[];
+      for (final entry in byCycle.entries) {
+        final cycleOps = entry.value.map((r) => r.operationId).toSet();
+        final cycleNames = entry.value
+            .map((r) => _normalizeOpName(r.operationName))
+            .where((n) => n.isNotEmpty)
+            .toSet();
+
+        final completeById = useTemplateRules &&
+            requiredOpsCountById > 0 &&
+            cycleOps.length == requiredOpsCountById &&
+            cycleOps.containsAll(opIds);
+        final completeByName = useTemplateRules &&
+            requiredOpsCountByName > 0 &&
+            cycleNames.length == requiredOpsCountByName &&
+            cycleNames.containsAll(normalizedTemplateNames);
+
+        final completeByFallback = !useTemplateRules &&
+            fallbackRequiredNames != null &&
+            fallbackRequiredNames.isNotEmpty &&
+            cycleNames.length == fallbackRequiredNames.length &&
+            cycleNames.containsAll(fallbackRequiredNames);
+
+        if (completeById || completeByName || completeByFallback) {
+          out.addAll(entry.value);
+        }
       }
+      return out;
+    }
+
+    var completedCycleRecords = pickCompleted(useTemplateRules: true);
+
+    // Fallback: если шаблон обновили и он перестал соответствовать истории,
+    // берём опорный набор операций из самой сессии (цикл с макс. числом уникальных операций).
+    if (completedCycleRecords.isEmpty && byCycle.isNotEmpty) {
+      Set<String> inferredRequiredNames = <String>{};
+      for (final entry in byCycle.entries) {
+        final names = entry.value
+            .map((r) => _normalizeOpName(r.operationName))
+            .where((n) => n.isNotEmpty)
+            .toSet();
+        if (names.length > inferredRequiredNames.length) {
+          inferredRequiredNames = names;
+        }
+      }
+      completedCycleRecords = pickCompleted(
+        useTemplateRules: false,
+        fallbackRequiredNames: inferredRequiredNames,
+      );
     }
 
     final completedCycles = completedCycleRecords.map((r) => r.cycleNumber).toSet().length;
@@ -35,9 +87,9 @@ class AnalyticsService {
       );
     }
 
-    final byOperation = <int, List<MeasurementRecordModel>>{};
+    final byOperationName = <String, List<MeasurementRecordModel>>{};
     for (final r in completedCycleRecords) {
-      byOperation.putIfAbsent(r.operationId, () => []).add(r);
+      byOperationName.putIfAbsent(r.operationName, () => []).add(r);
     }
 
     final cycleTotals = <int, int>{};
@@ -51,9 +103,11 @@ class AnalyticsService {
     var spreadSum = 0;
     final sortedOps = List<OperationModel>.from(templateOperations)
       ..sort((a, b) => a.orderIndex.compareTo(b.orderIndex));
+    final consumedNames = <String>{};
     for (final op in sortedOps) {
-      final rows = byOperation[op.id] ?? const [];
+      final rows = _pickRowsForTemplateOperation(op.name, byOperationName);
       if (rows.isEmpty) continue;
+      consumedNames.add(_normalizeOpName(op.name));
       final durations = rows.map((r) => r.durationMs).toList()..sort();
       final sum = durations.fold<int>(0, (a, b) => a + b);
       final avg = sum ~/ durations.length;
@@ -91,6 +145,47 @@ class AnalyticsService {
       );
     }
 
+    // Если в сессии есть операции, которых уже нет в обновлённом шаблоне,
+    // всё равно показываем их в аналитике, чтобы история не "пропадала".
+    for (final entry in byOperationName.entries) {
+      final normalized = _normalizeOpName(entry.key);
+      if (consumedNames.contains(normalized)) continue;
+      final durations = entry.value.map((r) => r.durationMs).toList()..sort();
+      if (durations.isEmpty) continue;
+      final sum = durations.fold<int>(0, (a, b) => a + b);
+      final avg = sum ~/ durations.length;
+      final min = durations.first;
+      final max = durations.last;
+      final spread = max - min;
+      spreadSum += spread;
+      final percent = averageCycleMs == 0 ? 0 : avg / averageCycleMs;
+      final variation = avg == 0 ? 0 : spread / avg;
+      final stability = variation < 0.15
+          ? 'стабильно'
+          : variation <= 0.35
+              ? 'средний разброс'
+              : 'нестабильно';
+      final importance = percent > 0.40
+          ? 'узкое место'
+          : percent >= 0.20
+              ? 'существенно'
+              : 'норма';
+
+      operationsAnalytics.add(
+        OperationAnalytics(
+          operationName: entry.key,
+          averageMs: avg,
+          minMs: min,
+          maxMs: max,
+          spreadMs: spread,
+          count: durations.length,
+          percentOfCycle: percent * 100,
+          stabilityLabel: stability,
+          importanceLabel: importance,
+        ),
+      );
+    }
+
     operationsAnalytics.sort((a, b) => b.averageMs.compareTo(a.averageMs));
     final bottleneck = operationsAnalytics.isEmpty ? null : operationsAnalytics.first;
     final avgSpread =
@@ -104,5 +199,20 @@ class AnalyticsService {
       averageSpreadMs: avgSpread,
       operations: operationsAnalytics,
     );
+  }
+
+  static String _normalizeOpName(String v) => v.trim().toLowerCase();
+
+  static List<MeasurementRecordModel> _pickRowsForTemplateOperation(
+    String templateOpName,
+    Map<String, List<MeasurementRecordModel>> byOperationName,
+  ) {
+    final target = _normalizeOpName(templateOpName);
+    for (final entry in byOperationName.entries) {
+      if (_normalizeOpName(entry.key) == target) {
+        return entry.value;
+      }
+    }
+    return const [];
   }
 }

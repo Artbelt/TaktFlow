@@ -178,43 +178,54 @@ class _TemplatesScreenState extends State<TemplatesScreen> {
                         trailing: Row(
                           mainAxisSize: MainAxisSize.min,
                           children: [
-                            IconButton(
-                              constraints: const BoxConstraints(minWidth: 40, minHeight: 40),
-                              padding: EdgeInsets.zero,
-                              iconSize: 21,
-                              icon: Icon(
-                                Icons.content_copy_outlined,
-                                color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.85),
-                              ),
-                              tooltip: 'Копировать',
-                              onPressed: () => _duplicateTemplate(t),
-                            ),
-                            IconButton(
-                              constraints: const BoxConstraints(minWidth: 40, minHeight: 40),
-                              padding: EdgeInsets.zero,
-                              iconSize: 21,
-                              icon: Icon(Icons.edit_outlined, color: Theme.of(context).colorScheme.primary),
-                              tooltip: 'Изменить',
-                              onPressed: () async {
-                                await Navigator.push<bool>(
-                                  context,
-                                  MaterialPageRoute<bool>(
-                                    builder: (_) => TemplateEditorScreen(templateId: t.id),
-                                  ),
-                                );
-                                _reload();
+                            PopupMenuButton<String>(
+                              tooltip: 'Действия',
+                              icon: const Icon(Icons.more_vert),
+                              onSelected: (value) async {
+                                if (value == 'copy') {
+                                  await _duplicateTemplate(t);
+                                  return;
+                                }
+                                if (value == 'edit') {
+                                  await Navigator.push<bool>(
+                                    context,
+                                    MaterialPageRoute<bool>(
+                                      builder: (_) => TemplateEditorScreen(templateId: t.id),
+                                    ),
+                                  );
+                                  _reload();
+                                  return;
+                                }
+                                if (value == 'delete') {
+                                  await _confirmDelete(t);
+                                }
                               },
-                            ),
-                            IconButton(
-                              constraints: const BoxConstraints(minWidth: 40, minHeight: 40),
-                              padding: EdgeInsets.zero,
-                              iconSize: 21,
-                              icon: Icon(
-                                Icons.delete_outline,
-                                color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.75),
-                              ),
-                              tooltip: 'Удалить',
-                              onPressed: () => _confirmDelete(t),
+                              itemBuilder: (ctx) => const [
+                                PopupMenuItem<String>(
+                                  value: 'copy',
+                                  child: ListTile(
+                                    dense: true,
+                                    leading: Icon(Icons.content_copy_outlined),
+                                    title: Text('Копировать'),
+                                  ),
+                                ),
+                                PopupMenuItem<String>(
+                                  value: 'edit',
+                                  child: ListTile(
+                                    dense: true,
+                                    leading: Icon(Icons.edit_outlined),
+                                    title: Text('Изменить'),
+                                  ),
+                                ),
+                                PopupMenuItem<String>(
+                                  value: 'delete',
+                                  child: ListTile(
+                                    dense: true,
+                                    leading: Icon(Icons.delete_outline),
+                                    title: Text('Удалить'),
+                                  ),
+                                ),
+                              ],
                             ),
                           ],
                         ),
